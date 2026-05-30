@@ -112,6 +112,21 @@ SearchResult MiniMax::search(
         state->get_legal_actions();
     }
 
+    // If the current position is terminal at root, return its score immediately.
+    if(state->game_state == WIN){
+        result.score = P_MAX;
+        result.nodes = ctx.nodes;
+        result.seldepth = ctx.seldepth;
+        result.pv.clear();
+        return result;
+    }
+    if(state->game_state == DRAW){
+        result.score = 0;
+        result.nodes = ctx.nodes;
+        result.seldepth = ctx.seldepth;
+        result.pv.clear();
+        return result;
+    }
 
     int best_score = M_MAX - 10;
     int move_index = 0;
@@ -133,6 +148,7 @@ SearchResult MiniMax::search(
             best_score = score;
             result.best_move = action;
             result.score = best_score;
+            result.pv = {action};
 
             if(p.report_partial && ctx.on_root_update){
                ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
@@ -146,7 +162,7 @@ SearchResult MiniMax::search(
     result.seldepth = ctx.seldepth;
     result.depth = depth;
     return result;
-} 
+}
 
 
 /*============================================================
