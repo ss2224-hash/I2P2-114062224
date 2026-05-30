@@ -34,7 +34,7 @@ int MiniMax::eval_ctx(
     // [ Hackathon TODO 3-1 ]
     // return the score for a winning terminal state
     // Hint: prefer faster wins by using ply.
-
+    
     if(state->game_state == DRAW){
         return 0;
     }
