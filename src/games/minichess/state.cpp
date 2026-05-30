@@ -23,8 +23,12 @@ static const int simple_material[7] = {0, 2, 6, 7, 8, 20, 100};
 // Piece-Square Tables (white perspective, mirror for black)
 static const int pst[6][BOARD_H][BOARD_W] = {
     // Pawn
-    {{ 0,  0,  0,  0,  0}, {15, 15, 15, 15, 15}, { 4,  6, 10,  6,  4},
-     { 2,  4,  6,  4,  2}, { 0,  2,  2,  2,  0}, { 0,  0,  0,  0,  0}},
+    {{ 0,  0,  0,  0,  0},  // index 0: 升變位置
+    {50, 50, 50, 50, 50},  // index 1: 兵臨城下，超高分
+    {20, 25, 30, 25, 20},  // index 2: 過河
+    {10, 15, 20, 15, 10},  // index 3: 前進一步
+    { 0,  0,  0,  0,  0},  // index 4: 起始位置 (0分)
+    { 0,  0,  0,  0,  0}}, // index 5: 不可能出現,
     // Rook
     {{ 2,  2,  2,  2,  2}, { 4,  4,  4,  4,  4}, { 0,  0,  2,  0,  0},
      { 0,  0,  2,  0,  0}, { 0,  0,  2,  0,  0}, { 0,  0,  0,  0,  0}},
@@ -106,12 +110,16 @@ int State::evaluate(
         // sum player/opponent pieces' value and add to score
         // if enemy king is still on the board, you should also call king_tropism for your pieces and add the value to score
         // king_tropism is already given above
+        
         for(int r = 0; r < BOARD_H; r++){
             for(int c = 0; c < BOARD_W; c++){
                 int piece = self_board[r][c];
                 if(piece){
                     self_score += kp_material[piece];
-                    self_score += pst[piece - 1][this->player == 0 ? r : (BOARD_H - 1 - r)][c];
+                    // 如果 player == 0 (白)，self 就是白，r 不翻轉 (r)
+                    // 如果 player == 1 (黑)，self 就是黑，r 要翻轉 (BOARD_H - 1 - r)
+                    int pst_r = (this->player == 0) ? r : (BOARD_H - 1 - r);
+                    self_score += pst[piece - 1][pst_r][c];
                     if(oppn_kr >= 0){
                         self_score += king_tropism(piece, r, c, oppn_kr, oppn_kc);
                     }
@@ -120,7 +128,10 @@ int State::evaluate(
                 int opp_piece = oppn_board[r][c];
                 if(opp_piece){
                     oppn_score += kp_material[opp_piece];
-                    oppn_score += pst[opp_piece - 1][this->player == 1 ? r : (BOARD_H - 1 - r)][c];
+                    // 如果 player == 0 (白)，oppn 就是黑 (1)，r 要翻轉 (BOARD_H - 1 - r)
+                    // 如果 player == 1 (黑)，oppn 就是白 (0)，r 不翻轉 (r)
+                    int opp_pst_r = (this->player == 0) ? (BOARD_H - 1 - r) : r;
+                    oppn_score += pst[opp_piece - 1][opp_pst_r][c];
                     if(self_kr >= 0){
                         oppn_score += king_tropism(opp_piece, r, c, self_kr, self_kc);
                     }
@@ -149,10 +160,9 @@ int State::evaluate(
     int bonus = 0;
 
     /* === Mobility bonus === */
+    /* === Mobility bonus === */
     if(use_mobility){
-        // [ Hackathon TODO 1-5 ]
-        // you can calculate mobility by legal actions size
-        // bonus += 2 * (self_mobility - oppn_mobility);
+        // [ Hackathon TODO 1-5 ] 原本的機動性計算
         if(this->legal_actions.empty() && this->game_state == UNKNOWN){
             this->get_legal_actions();
         }
@@ -166,11 +176,48 @@ int State::evaluate(
         int opp_mobility = (int)opp_state.legal_actions.size();
 
         bonus += 2 * (self_mobility - opp_mobility);
+
+        /* ==========================================================
+         * 🌟 新增：Threat Evaluation (威脅與受攻擊懲罰機制)
+         * 利用剛剛產生好的 legal_actions 來繪製雙方的「攻擊範圍地圖」
+         * ========================================================== */
+        
+        // 1. 繪製對手攻擊範圍 (Opponent Attack Map)
+        bool oppn_attack_map[BOARD_H][BOARD_W] = {false};
+        for(const auto& action : opp_state.legal_actions){
+            oppn_attack_map[action.second.first][action.second.second] = true;
+        }
+
+        // 2. 繪製自己的攻擊範圍 (Self Attack Map)
+        bool self_attack_map[BOARD_H][BOARD_W] = {false};
+        for(const auto& action : this->legal_actions){
+            self_attack_map[action.second.first][action.second.second] = true;
+        }
+
+        // 3. 掃描棋盤，進行威脅結算
+        for(int r = 0; r < BOARD_H; r++){
+            for(int c = 0; c < BOARD_W; c++){
+                
+                // A. 檢查自己的棋子是否身處險境
+                int my_piece = self_board[r][c];
+                if(my_piece && oppn_attack_map[r][c]){
+                    // 扣分策略：被威脅時，扣除該棋子一半的價值
+                    // 這樣 AI 會極力保護昂貴的皇后(1000/2=500)，但對於兵(20/2=10)的犧牲比較能接受
+                    bonus -= (kp_material[my_piece] / 2);
+                }
+
+                // B. 檢查對手的棋子是否在我們的槍口下 (選用，但強烈建議)
+                int opp_piece = oppn_board[r][c];
+                if(opp_piece && self_attack_map[r][c]){
+                    // 攻擊獎勵：威脅到敵方棋子時給予加分
+                    bonus += (kp_material[opp_piece] / 2);
+                }
+            }
+        }
     }
 
     return self_score - oppn_score + bonus;
 }
-
 
 
 /*============================================================
@@ -410,7 +457,8 @@ void State::get_legal_actions_naive(){
                             oppn_piece = oppn_board[p[0]][p[1]];
                             if(oppn_piece==6){
                                 this->game_state = WIN;
-                                this->legal_actions = all_actions;
+                                this->legal_actions.clear();
+                                this->legal_actions.push_back(Move(Point(i, j), Point(p[0], p[1])));
                                 return;
                             }
                         }
@@ -433,7 +481,9 @@ void State::get_legal_actions_naive(){
                             oppn_piece = oppn_board[p[0]][p[1]];
                             if(oppn_piece==6){
                                 this->game_state = WIN;
-                                this->legal_actions = all_actions;
+                                
+                                this->legal_actions.clear();
+                                this->legal_actions.push_back(Move(Point(i, j), Point(p[0], p[1])));
                                 return;
                             }
                         }

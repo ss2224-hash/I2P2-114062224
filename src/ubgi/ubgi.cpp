@@ -8,6 +8,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
+#include "../util/log.hpp"
 
 #include "ubgi.hpp"
 #include "config.hpp"
@@ -289,6 +290,7 @@ static void do_search(
     };
 
     if(state.legal_actions.empty()){
+        log_debug("UBGI: do_search: no legal actions for player=%d, sending bestmove 0000\n", player);
         if(alive()){
             send("bestmove 0000");
             g_bestmove_sent = true;
@@ -297,6 +299,8 @@ static void do_search(
         return;
     }
     if(state.game_state == WIN){
+        log_debug("UBGI: do_search: terminal WIN, legal_actions[0]=%s count=%d\n",
+            move_to_str(state.legal_actions[0]).c_str(), (int)state.legal_actions.size());
         if(alive()){
             send("bestmove " + move_to_str(state.legal_actions[0]));
             g_bestmove_sent = true;
@@ -307,6 +311,8 @@ static void do_search(
 
     Move best_move = state.legal_actions[0];
     g_best_move = best_move;
+    log_debug("UBGI: do_search: initial best_move=%s legal=%d player=%d\n",
+        move_to_str(best_move).c_str(), (int)state.legal_actions.size(), player);
     int depth_limit = (max_depth > 0) ? max_depth : 100;
     uint64_t total_nodes = 0;
 
@@ -464,6 +470,8 @@ static void do_search(
     }
 
     if(alive()){
+        log_debug("UBGI: do_search: final best_move=%s legal=%d\n",
+            move_to_str(best_move).c_str(), (int)state.legal_actions.size());
         send("bestmove " + move_to_str(best_move));
         g_bestmove_sent = true;
     }
