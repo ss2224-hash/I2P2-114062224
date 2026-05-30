@@ -6,15 +6,19 @@
 /*============================================================
  * MiniMax — eval_ctx
  *
- * Negamax without pruning. Caller manages memory.
+ * Negamax with Alpha-Beta pruning. Caller manages memory.
  *============================================================*/
+// 🌟 提醒：記得去 minimax.hpp 把 eval_ctx 的宣告加上 alpha 和 beta！
+// int eval_ctx(..., int alpha = M_MAX, int beta = P_MAX);
 int MiniMax::eval_ctx(
     State *state,
     int depth,
     GameHistory& history,
     int ply,
     SearchContext& ctx,
-    const MMParams& p
+    const MMParams& p,
+    int alpha, // 🌟 新增：目前能確保的最低保底分數 (預設極小)
+    int beta   // 🌟 新增：對手能容忍的最高上限分數 (預設極大)
 ){
     ctx.nodes++;
     if(ply > ctx.seldepth){
@@ -30,15 +34,9 @@ int MiniMax::eval_ctx(
     }
 
     /* === Terminal / leaf checks === */
-
-    // [ Hackathon TODO 3-1 ]
-    // return the score for a winning terminal state
-    // Hint: prefer faster wins by using ply.
-    
     if(state->game_state == DRAW){
         return 0;
     }
-
     if(state->game_state == WIN){
         return P_MAX - ply;
     }
@@ -59,43 +57,47 @@ int MiniMax::eval_ctx(
     }
 
     /* === Negamax loop === */
-    int best_score = M_MAX;
+    int best_score = M_MAX; // 保持極小值
 
     for(auto& action : state->legal_actions){
 
-        // create the child state after applying action
         State* next = state->next_state(action);
-
         bool same = next->same_player_as_parent();
 
-        // search the child one level deeper
-        int raw = eval_ctx(next, depth - 1, history, ply + 1, ctx, p);
+        // 🌟 Alpha-Beta 視角反轉：
+        // 如果換對手下 (!same)，則對手的保底(alpha)是我們的上限(-beta)，對手的上限(beta)是我們的保底(-alpha)
+        // 如果還是自己下 (same)，則視角不變，alpha 與 beta 照舊傳遞
+        int next_alpha = same ? alpha : -beta;
+        int next_beta  = same ? beta  : -alpha;
 
-        // convert raw to the current player's perspective (handle same-player turns)
+        int raw = eval_ctx(next, depth - 1, history, ply + 1, ctx, p, next_alpha, next_beta);
         int child_score = same ? raw : -raw;
 
         delete next;
 
-        // update best_score if this child is better
         if(child_score > best_score){
             best_score = child_score;
+        }
+
+        // 🌟 Alpha-Beta 剪枝核心邏輯
+        if (best_score > alpha) {
+            alpha = best_score; // 更新我們的保底分數
+        }
+        if (alpha >= beta) {
+            break; // ✂️ 剪枝！對手絕對不會讓我們走到這個局面，剩下的走法不用看了
         }
 
         if(ctx.stop){
             break;
         }
-
     }
 
     history.pop(state->hash());
     return best_score;
 }
 
-
 /*============================================================
  * MiniMax — search
- *
- * Iterate legal moves, call eval_ctx, return SearchResult.
  *============================================================*/
 SearchResult MiniMax::search(
     State *state,
@@ -112,7 +114,6 @@ SearchResult MiniMax::search(
         state->get_legal_actions();
     }
 
-    // If the current position is terminal at root, return its score immediately.
     if(state->game_state == WIN){
         result.score = P_MAX;
         result.nodes = ctx.nodes;
@@ -128,27 +129,40 @@ SearchResult MiniMax::search(
         return result;
     }
 
-    int best_score = M_MAX - 10;
+    // 🌟 修復 1：移除 -10 防止溢位
+    int best_score = M_MAX; 
+    
+    // 🌟 初始化根節點的 alpha 和 beta
+    int alpha = M_MAX;
+    int beta = P_MAX;
+    
     int move_index = 0;
     int total_moves = (int)state->legal_actions.size();
 
     for(auto& action : state->legal_actions){
-        /* [ Hackathon TODO 4-1 ]
-         * search this move like TODO 3, but starting from the root */
 
-        // create child state for this root move
         State* next = state->next_state(action);
         bool same = next->same_player_as_parent();
-        int raw = eval_ctx(next, depth - 1, history, 1, ctx, p);
+        
+        int next_alpha = same ? alpha : -beta;
+        int next_beta  = same ? beta  : -alpha;
+
+        int raw = eval_ctx(next, depth - 1, history, 1, ctx, p, next_alpha, next_beta);
         int score = same ? raw : -raw;
+        
         delete next;
 
-        if(score > best_score){
-            // keep this move if it is the best so far
+        // 🌟 修復 2：加入 move_index == 0 作為絕對保底，確保 AI 絕不回傳空指標
+        if(move_index == 0 || score > best_score){
             best_score = score;
             result.best_move = action;
             result.score = best_score;
             result.pv = {action};
+
+            // 🌟 在根節點也要持續更新 alpha 門檻
+            if (best_score > alpha) {
+                alpha = best_score;
+            }
 
             if(p.report_partial && ctx.on_root_update){
                ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
@@ -157,7 +171,6 @@ SearchResult MiniMax::search(
         move_index++;
     }
 
-    // update result fields and return
     result.nodes = ctx.nodes;
     result.seldepth = ctx.seldepth;
     result.depth = depth;
