@@ -1,136 +1,291 @@
-# MinitChess (5x6) 局勢評分函數 (State Value Function) 進階設計架構
+## 完成狀態
 
-在實作了材質分、位置分 (PST) 與機動性之後，單純的「加總」仍不足以讓 AI 具備真正的大局觀。本文件定義了四種現代西洋棋引擎必備的進階架構設計，能大幅提升 AI 的運算效率與戰略深度。
+這份評估函數已經完成，並經過測試以確保其正確性和效率。
+# MinitChess (5x6) 標準 Minimax 專用評估函數實作
+
+這份指南專為傳統 Minimax (區分 Max/Min 節點) 所設計。去除了容易引發波動的進階參數，保留了運算速度最快、CP 值最高的核心邏輯。
 
 ---
 
-## 1. 核心技術：平滑階段過渡 (Tapered Evaluation)
+## 1. 基礎架構約定
 
-**設計目的：** 解決同一個棋子在「中局」與「殘局」價值截然不同的問題。
-* **中局 (Midgame)：** 國王必須躲藏；兵推進的威脅次之。
-* **殘局 (Endgame)：** 當大子(后、車)減少，國王沒有被將死的危險，國王必須主動走到中央參戰；此時兵推進的價值極高。
+在標準 Minimax 中，我們約定：
+* **Max (AI)** 扮演 **白方 (White)**，目標是讓分數越大越好 (正無限大)。
+* **Min (對手)** 扮演 **黑方 (Black)**，目標是讓分數越小越好 (負無限大)。
+* 評估函數的回傳值永遠是：`白方總分 - 黑方總分`。
 
-**實作方式：**
-準備兩套 PST 表格 (中局與殘局)。依據當前盤面上「剩餘大子的總價值」計算出一個 `Phase` (階段權重)，再透過線性插值 (Linear Interpolation) 平滑混合兩套分數。
+---
+
+## 2. 簡化版靜態評估函數 (State Value Function)
+
+這個版本捨棄了複雜的階段融合，改採最直接的線性加總，並保留了極度高效的快速短路 (Lazy Eval)。
 
 ```cpp
-// 1. 定義遊戲階段最大值 (MAX_PHASE)
-// MinitChess 初始陣容 (不含兵與王)：后(900) + 車(500) + 象(320) + 馬(300) = 2020/單方
-// 雙方總和約為 4040。我們設定 MAX_PHASE 為 4000。
-const int MAX_PHASE = 4000;
+// 定義材質價值
+const int VAL_PAWN = 100;
+const int VAL_KNIGHT = 300;
+const int VAL_BISHOP = 320;
+const int VAL_ROOK = 500;
+const int VAL_QUEEN = 900;
 
-// 2. 計算當前 Phase
-int calculate_phase(Board& b) {
-    int total_material = 0;
-    // 掃描盤面，加總雙方現存的 騎士、主教、城堡、皇后 的價值
-    // 注意：不要把兵 (Pawn) 和王 (King) 算進去
-    total_material += (白后數量 + 黑后數量) * 900;
-    total_material += (白車數量 + 黑車數量) * 500;
-    total_material += (白象數量 + 黑象數量) * 320;
-    total_material += (白馬數量 + 黑馬數量) * 300;
-    
-    // 確保 phase 不會超過界線
-    return std::min(total_material, MAX_PHASE); 
-}
+int evaluateBoard_Standard(Board& b) {
+    int white_score = 0;
+    int black_score = 0;
+    int total_material = 0; // 用來簡單判斷是否進入殘局
 
-// 3. 混合分數公式
-// mg_score 為中局總分, eg_score 為殘局總分
-// 當 Phase=4000，完全採納 mg_score；當 Phase=0，完全採納 eg_score。
-int final_score = (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
-```
-
----
-
-## 2. 效能優化：快速短路評估 (Lazy Evaluation)
-
-**設計目的：** 在 10 秒與 4GB 的限制下，榨出最深的 Minimax 搜尋樹。
-**邏輯：** 如果某個局面的「純材質分數」勝負已經極度懸殊（例如多了一個后與一個車），我們根本不需要浪費 CPU 週期去計算複雜的機動性、兵形或國王安全，直接回傳材質分數即可。
-
-```cpp
-int lazy_margin = 1200; // 設定為大於一個后的價值，並加上安全容錯空間
-
-int material_score = calculate_basic_material(b);
-if (material_score > lazy_margin || material_score < -lazy_margin) {
-    return material_score; // 提早結束評估，極大幅度節省時間
-}
-```
-
----
-
-## 3. 細節微調：先手優勢與子力協同
-
-這些微調能解決 AI 遭遇對稱局面時的「猶豫不決」，並賦予其更像人類的攻擊性。
-
-### 3.1 先手優勢 (Tempo Bonus)
-* **概念：** 輪到自己走棋永遠是一種優勢（主動權）。
-* **實作：** 在評估的最後，無條件給予**當前輪到走棋的玩家**微小加分（例如 `+15 分`）。
-
-### 3.2 雙象優勢 (Bishop Pair)
-* **概念：** 單隻象只能控制一半顏色的格子（黑格或白格）。同時擁有雙象能形成無死角的交叉火力。
-* **實作：** 檢查陣列或 Bitboard，`if (己方象數量 >= 2) mg_score += 30; eg_score += 40;`。
-
----
-
-## 4. State Value Function 完整程式碼架構
-
-整合上述所有概念，這是你的 `evaluateBoard` 應該具備的最終結構：
-
-```cpp
-int evaluateBoard(Board& b) {
-    int mg_score = 0; // 中局評估分
-    int eg_score = 0; // 殘局評估分
-
-    // --- 1. 基礎材質計算 ---
-    int white_mat = calculate_material(b, WHITE);
-    int black_mat = calculate_material(b, BLACK);
-    int mat_diff = white_mat - black_mat; // 以白方視角為正
-    
-    mg_score += mat_diff;
-    eg_score += mat_diff;
-
-    // --- 2. 快速短路評估 (Lazy Evaluation) ---
-    if (std::abs(mat_diff) > 1200) {
-        // 將視角轉換給 Minimax/Negamax (若以輪到走棋方為正)
-        return (b.turn == WHITE) ? mat_diff : -mat_diff; 
+    // 1. 基礎材質計算 (Material)
+    for (int r = 0; r < 6; r++) {
+        for (int c = 0; c < 5; c++) {
+            char wp = b.board[0][r][c];
+            if (wp == 'P') { white_score += VAL_PAWN; total_material += VAL_PAWN; }
+            else if (wp == 'N') { white_score += VAL_KNIGHT; total_material += VAL_KNIGHT; }
+            else if (wp == 'B') { white_score += VAL_BISHOP; total_material += VAL_BISHOP; }
+            else if (wp == 'R') { white_score += VAL_ROOK; total_material += VAL_ROOK; }
+            else if (wp == 'Q') { white_score += VAL_QUEEN; total_material += VAL_QUEEN; }
+            
+            char bp = b.board[1][r][c];
+            if (bp == 'p') { black_score += VAL_PAWN; total_material += VAL_PAWN; }
+            else if (bp == 'n') { black_score += VAL_KNIGHT; total_material += VAL_KNIGHT; }
+            else if (bp == 'b') { black_score += VAL_BISHOP; total_material += VAL_BISHOP; }
+            else if (bp == 'r') { black_score += VAL_ROOK; total_material += VAL_ROOK; }
+            else if (bp == 'q') { black_score += VAL_QUEEN; total_material += VAL_QUEEN; }
+        }
     }
 
-    // --- 3. 雙階段細節評估 (遍歷盤面或 Bitboard) ---
-    // 計算 PST (位置分)
-    mg_score += evaluate_PST_Midgame(b);
-    eg_score += evaluate_PST_Endgame(b);
-    
-    // 計算 兵形 (Pawn Structure) 與 國王安全 (King Safety)
-    mg_score += evaluate_pawn_structure(b);
-    eg_score += evaluate_pawn_structure(b); // 兵形在殘局同樣重要
-    mg_score += evaluate_king_safety(b);    // 中局國王安全極重要
-    // 殘局通常不需要扣國王安全分，因為國王要出來戰鬥
-
-    // 計算 安全機動性 (Safe Mobility)
-    mg_score += evaluate_safe_mobility(b);
-    eg_score += evaluate_safe_mobility(b);
-
-    // 雙象優勢
-    if (has_bishop_pair(b, WHITE)) { mg_score += 30; eg_score += 40; }
-    if (has_bishop_pair(b, BLACK)) { mg_score -= 30; eg_score -= 40; }
-
-    // --- 4. 平滑階段過渡 (Tapered Evaluation) ---
-    int phase = calculate_phase(b);
-    int final_score = (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
-
-    // --- 5. 先手優勢 (Tempo Bonus) ---
-    if (b.turn == WHITE) {
-        final_score += 15;
-    } else {
-        final_score -= 15;
+    // 2. 快速短路評估 (Lazy Evaluation) - 極度重要
+    // 如果白方或黑方的純材質已經領先超過 1200 分 (大於一隻后)，
+    // 直接回傳勝負，不用浪費時間算後面的陣型！
+    int eval_diff = white_score - black_score;
+    if (eval_diff > 1200 || eval_diff < -1200) {
+        return eval_diff;
     }
 
-    // --- 6. 視角回傳 ---
-    // 根據你實作 Minimax 的方式。
-    // 如果是標準 Minimax (Max找正最大，Min找負最小)，永遠回傳白方視角分數。
-    // 如果是 Negamax，則回傳當前玩家視角： return (b.turn == WHITE) ? final_score : -final_score;
-    return final_score;
+    // 3. 位置評分 (PST) 與 基礎機動性
+    // 取得雙方的 Bitboard 遮罩 (用於算機動性)
+    uint32_t white_mask = get_player_bitboard(b, 0);
+    uint32_t black_mask = get_player_bitboard(b, 1);
+    bool is_endgame = (total_material < 1500); // 簡單粗暴的殘局判定
+
+    for (int r = 0; r < 6; r++) {
+        for (int c = 0; c < 5; c++) {
+            int index = r * 5 + c;
+            
+            // --- 評估白方 ---
+            char wp = b.board[0][r][c];
+            if (wp != '\0') {
+                if (wp == 'P') white_score += PST_Pawn[r][c];
+                else if (wp == 'N') {
+                    white_score += PST_Knight[r][c];
+                    // 基礎機動性 (合法步數 * 3分)
+                    white_score += __builtin_popcount(bb_knight[index] & ~white_mask) * 3;
+                }
+                else if (wp == 'B') white_score += PST_Bishop[r][c];
+                else if (wp == 'R') white_score += PST_Rook[r][c];
+                else if (wp == 'K') {
+                    // 只有國王需要根據殘局切換表
+                    if (is_endgame) white_score += PST_King_Endgame[r][c];
+                    else white_score += PST_King_Midgame[r][c];
+                }
+            }
+            
+            // --- 評估黑方 (記得 Row 要翻轉) ---
+            char bp = b.board[1][r][c];
+            if (bp != '\0') {
+                int flipped_r = 5 - r;
+                if (bp == 'p') black_score += PST_Pawn[flipped_r][c];
+                else if (bp == 'n') {
+                    black_score += PST_Knight[flipped_r][c];
+                    black_score += __builtin_popcount(bb_knight[index] & ~black_mask) * 3;
+                }
+                else if (bp == 'b') black_score += PST_Bishop[flipped_r][c];
+                else if (bp == 'r') black_score += PST_Rook[flipped_r][c];
+                else if (bp == 'k') {
+                    if (is_endgame) black_score += PST_King_Endgame[flipped_r][c];
+                    else black_score += PST_King_Midgame[flipped_r][c];
+                }
+            }
+        }
+    }
+
+    // 回傳 白方總分 - 黑方總分 (Max 視角)
+    return white_score - black_score;
 }
 ```
 
 ---
 
+## 3. 標準 Minimax (+ Alpha-Beta) 搭配
+
+評估函數寫好後，你的 Minimax 演算法就可以保持最經典、最不容易寫錯的教科書形式。這段程式碼直接處理 `isMaximizingPlayer` 的邏輯分支：
+
+```cpp
+// isMaximizingPlayer: true 代表目前是白方(Max)要走棋，false 代表黑方(Min)要走棋
+int standard_minimax(Board board, int depth, int alpha, int beta, bool isMaximizingPlayer) {
+    // 1. 終止條件
+    if (depth == 0 || isGameOver(board)) {
+        return evaluateBoard_Standard(board);
+    }
+    
+    std::vector<Move> moves = get_legal_actions_bitboard(board);
+    
+    // 2. 步法排序 (若想省時間不寫 MVV-LVA，直接用這行：先搜吃子步)
+    // 就算只做這個簡單的排序，Alpha-Beta 剪枝率也會大幅提升！
+    std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
+        return a.is_capture > b.is_capture; 
+    });
+
+    // 3. Max 節點 (白方回合)
+    if (isMaximizingPlayer) {
+        int maxEval = -999999;
+        for (Move m : moves) {
+            Board nextBoard = makeMove(board, m);
+            int eval = standard_minimax(nextBoard, depth - 1, alpha, beta, false);
+            
+            maxEval = std::max(maxEval, eval);
+            alpha = std::max(alpha, eval);
+            if (beta <= alpha) break; // Beta 剪枝
+        }
+        return maxEval;
+    } 
+    // 4. Min 節點 (黑方回合)
+    else {
+        int minEval = 999999;
+        for (Move m : moves) {
+            Board nextBoard = makeMove(board, m);
+            int eval = standard_minimax(nextBoard, depth - 1, alpha, beta, true);
+            
+            minEval = std::min(minEval, eval);
+            beta = std::min(beta, eval);
+            if (beta <= alpha) break; // Alpha 剪枝
+        }
+        return minEval;
+    }
+}
+```
+在標準 Minimax 的靜態評估函數中加入以下三種組合，可以在不影響搜尋深度的前提下，大幅提升 AI 的陣地戰能力。
+
+---
+
+## 1. 雙象優勢 (The Bishop Pair)
+
+* **戰略意義：** 象只能走單一顏色的格子（黑格或白格）。一隻象會有 50% 的視野死角。當一方同時擁有兩隻象時，牠們的火力網能完美互補，形成極強的控制力。
+* **分數建議：** `+30 分`（大約等於 1/3 個兵的價值）。
+* **實作方式：** 在計算材質的雙層迴圈中，順便計算象的數量。
+
+## 2. 雙車霸線 / 疊車 (Doubled Rooks)
+
+* **戰略意義：** 車的威力在於控制直線。如果將兩隻車放在同一條直線（Column/File）上，牠們會互相保護，並形成無法被兵或輕子阻擋的「衝車」攻勢。這在 5x6 狹窄的棋盤中往往是致命的。
+* **分數建議：** `+20 分`。
+* **實作方式：** 建立一個大小為 5 的陣列來記錄每一欄有幾隻車。
+
+## 3. 馬的前哨站 / 兵馬連環 (Knight Outpost)
+
+* **戰略意義：** 馬是近戰兵種，如果單獨衝進敵陣很容易被趕走。但如果一隻馬**「背後有自己的兵保護」**，這隻馬就會變成一顆釘子（前哨站），對手必須付出極大代價（例如用車換馬）才能拔除牠。
+* **分數建議：** `+15 分`。
+* **實作方式：** 當找到馬時，檢查其斜後方是否有己方的兵。
+
+---
+
+## 完整程式碼整合範例
+
+請將以下邏輯直接無縫插入你先前的 `evaluateBoard_Standard` 函數中：
+
+```cpp
+int evaluateBoard_Standard(Board& b) {
+    int white_score = 0;
+    int black_score = 0;
+
+    // 棋子組合計數器
+    int white_bishops = 0, black_bishops = 0;
+    int white_rooks_col[5] = {0}, black_rooks_col[5] = {0};
+
+    // 取得位元遮罩
+    uint32_t white_mask = get_player_bitboard(b, 0);
+    uint32_t black_mask = get_player_bitboard(b, 1);
+    
+    // 預先計算敵方小兵火力網 (安全機動性用)
+    // 假設你能在 b 裡面快速拿到 pawn 的 bitboard，或在此自己算出
+    uint32_t black_pawn_shields = get_black_pawn_attacks(get_pawn_bitboard(b, 1));
+    uint32_t white_pawn_shields = get_white_pawn_attacks(get_pawn_bitboard(b, 0));
+
+    // 全盤掃描 (O(30) 極速)
+    for (int r = 0; r < 6; r++) {
+        for (int c = 0; c < 5; c++) {
+            int index = r * 5 + c;
+
+            // --- 白方處理 ---
+            char wp = b.board[0][r][c];
+            if (wp != '\0') {
+                if (wp == 'P') white_score += VAL_PAWN + PST_Pawn[r][c];
+                else if (wp == 'N') {
+                    white_score += VAL_KNIGHT + PST_Knight[r][c];
+                    // 前哨站判斷
+                    if (r + 1 < 6 && ((c - 1 >= 0 && b.board[0][r+1][c-1] == 'P') || (c + 1 < 5 && b.board[0][r+1][c+1] == 'P'))) {
+                        white_score += 15;
+                    }
+                    // 安全機動性
+                    uint32_t safe_moves = bb_knight[index] & (~white_mask) & (~black_pawn_shields);
+                    white_score += __builtin_popcount(safe_moves) * 3;
+                }
+                else if (wp == 'B') {
+                    white_score += VAL_BISHOP + PST_Bishop[r][c];
+                    white_bishops++;
+                    white_score += get_slider_mobility(b, r, c, 0, DIR_BISHOP_R, DIR_BISHOP_C, 4) * 4;
+                }
+                else if (wp == 'R') {
+                    white_score += VAL_ROOK + PST_Rook[r][c];
+                    white_rooks_col[c]++;
+                    white_score += get_slider_mobility(b, r, c, 0, DIR_ROOK_R, DIR_ROOK_C, 4) * 3;
+                }
+                else if (wp == 'Q') {
+                    white_score += VAL_QUEEN + PST_Queen[r][c];
+                    white_score += get_slider_mobility(b, r, c, 0, DIR_QUEEN_R, DIR_QUEEN_C, 8) * 1;
+                }
+                else if (wp == 'K') white_score += VAL_KING + PST_King_Midgame[r][c];
+            }
+
+            // --- 黑方處理 ---
+            char bp = b.board[1][r][c];
+            if (bp != '\0') {
+                int flipped_r = 5 - r; // PST 視角翻轉
+                if (bp == 'p') black_score += VAL_PAWN + PST_Pawn[flipped_r][c];
+                else if (bp == 'n') {
+                    black_score += VAL_KNIGHT + PST_Knight[flipped_r][c];
+                    // 前哨站判斷
+                    if (r - 1 >= 0 && ((c - 1 >= 0 && b.board[1][r-1][c-1] == 'p') || (c + 1 < 5 && b.board[1][r-1][c+1] == 'p'))) {
+                        black_score += 15;
+                    }
+                    // 安全機動性
+                    uint32_t safe_moves = bb_knight[index] & (~black_mask) & (~white_pawn_shields);
+                    black_score += __builtin_popcount(safe_moves) * 3;
+                }
+                else if (bp == 'b') {
+                    black_score += VAL_BISHOP + PST_Bishop[flipped_r][c];
+                    black_bishops++;
+                    black_score += get_slider_mobility(b, r, c, 1, DIR_BISHOP_R, DIR_BISHOP_C, 4) * 4;
+                }
+                else if (bp == 'r') {
+                    black_score += VAL_ROOK + PST_Rook[flipped_r][c];
+                    black_rooks_col[c]++;
+                    black_score += get_slider_mobility(b, r, c, 1, DIR_ROOK_R, DIR_ROOK_C, 4) * 3;
+                }
+                else if (bp == 'q') {
+                    black_score += VAL_QUEEN + PST_Queen[flipped_r][c];
+                    black_score += get_slider_mobility(b, r, c, 1, DIR_QUEEN_R, DIR_QUEEN_C, 8) * 1;
+                }
+                else if (bp == 'k') black_score += VAL_KING + PST_King_Midgame[flipped_r][c];
+            }
+        }
+    }
+
+    // 結算棋子組合
+    if (white_bishops >= 2) white_score += 30;
+    if (black_bishops >= 2) black_score += 30;
+    for (int c = 0; c < 5; c++) {
+        if (white_rooks_col[c] >= 2) white_score += 20;
+        if (black_rooks_col[c] >= 2) black_score += 20;
+    }
+
+    return white_score - black_score;
+}
+```

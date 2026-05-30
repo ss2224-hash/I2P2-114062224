@@ -172,7 +172,7 @@ const int PST_King_Midgame[6][5] = {
 
 ---
 
-## 1. 核心概念與常見陷阱
+1. 核心概念與常見陷阱
 
 * **定義：** 機動性 = 該棋子當下擁有的**合法可移動格數**。
 * **計算公式：** `機動性加分 = 可移動格數 × 該兵種專屬乘數`
@@ -180,7 +180,7 @@ const int PST_King_Midgame[6][5] = {
 
 ---
 
-## 2. 兵種專屬機動性乘數 (Mobility Multipliers)
+2. 兵種專屬機動性乘數 (Mobility Multipliers)
 
 針對 5x6 棋盤，搭配基準材質分數（兵=100, 車=500）的建議乘數設定如下：
 
@@ -195,11 +195,11 @@ const int PST_King_Midgame[6][5] = {
 
 ---
 
-## 3. 實作方法 (基於 Bitboard)
+3. 實作方法 (基於 Bitboard)
 
 利用位元運算與 `__builtin_popcount` 可以用 O(1) 的極速算出機動性。
 
-### 3.1 基礎機動性 (Basic Mobility)
+3.1 基礎機動性 (Basic Mobility)
 只排除「會踩到自己人」的格子。
 
 ```cpp
@@ -212,64 +212,258 @@ int mobility = __builtin_popcount(valid_moves);
 int score_bonus = mobility * 3; // 馬的乘數為 3
 ```
 
-### 3.2 進階優化：安全機動性 (Safe Mobility) - 強烈建議！
+3.2 進階優化：安全機動性 (Safe Mobility) - 強烈建議！
 基礎機動性有個缺點：AI 可能會把算出來的合法步，走到**已經被對手小兵控制的死路**上。
 實作「安全機動性」，也就是在算 `valid_moves` 時，**剔除掉對手兵的攻擊範圍**。
 
-```cpp
-// 1. 預先算出對手所有「兵」的攻擊遮罩聯集 (Enemy Pawn Attack Mask)
-uint32_t enemy_pawn_attacks = 0;
-// 遍歷對手所有的兵，將它們的攻擊遮罩做 OR 運算聯集起來...
+    1. 高效位元棋盤 (Bitboard) 實作
 
-// 2. 計算安全合法步
-// (馬的原始攻擊範圍) AND (不能是自己人) AND (不能是對手兵的攻擊範圍)
-uint32_t valid_safe_moves = bb_knight[index] & (~friendly_pieces) & (~enemy_pawn_attacks);
+    在 5x6 棋盤中，計算對手小兵的攻擊火力網不需要經過耗時的陣列雙層迴圈，可直接利用位元位移 (Bitwise Shift) 在 $O(1)$ 時間內完成。
 
-// 3. 計算分數
-int safe_mobility = __builtin_popcount(valid_safe_moves);
-int score_bonus = safe_mobility * 3;
-```
-*效果：只要加上這一個 `& (~enemy_pawn_attacks)` 位元運算，你的 AI 走位就會瞬間變得像人類一樣聰明，絕不會把大子白白送給對手的小兵吃。*
+    1.1 敵方小兵攻擊遮罩生成 (白方視角)
+    當 AI 為白方時，需要計算黑兵的攻擊範圍（黑兵向前推進為 Row 增加，即 Index 變大）。
 
+    ```cpp
+    // 5x6 Bitboard 邊界遮罩 (防止從左邊界或右邊界溢出到下一列)
+    const uint32_t FILE_A = 0x10842108; // 欄 0 的所有 bits
+    const uint32_t FILE_E = 0x02108421; // 欄 4 的所有 bits
+
+    uint32_t get_black_pawn_attacks(uint32_t black_pawns) {
+        uint32_t attacks = 0;
+        // 黑兵向左下方攻擊 (Index + 4)，需排除原本就在 A 欄的兵溢出
+        attacks |= (black_pawns << 4) & (~FILE_E);
+        // 黑兵向右下方攻擊 (Index + 6)，需排除原本就在 E 欄的兵溢出
+        attacks |= (black_pawns << 6) & (~FILE_A);
+        return attacks;
+    }
+    ```
+    1. 補齊「安全機動性 (Safe Mobility)」的黑方視角邏輯
+    在標準 Minimax 裡，你也需要評估黑方棋子，所以必須反過來算出「白兵攻擊範圍」。
+
+    白兵是往 Row 減少的方向前進（對應到 1D Index 是減少），因此位元運算要改用右移 (>>)，且邊界遮罩的方向剛好相反：
+
+    ```cpp
+    // 5x6 Bitboard 邊界遮罩
+    const uint32_t FILE_A = 0x10842108; // 欄 0 (Col 0)
+    const uint32_t FILE_E = 0x02108421; // 欄 4 (Col 4)
+
+    // 取得黑兵火力網 (保護白子用)
+    uint32_t get_black_pawn_attacks(uint32_t black_pawns) {
+        uint32_t attacks = 0;
+        attacks |= (black_pawns << 4) & (~FILE_E); // 往左下攻擊
+        attacks |= (black_pawns << 6) & (~FILE_A); // 往右下攻擊
+        return attacks;
+    }
+
+    // 取得白兵火力網 (保護黑子用) - 這是你需要補上的！
+    uint32_t get_white_pawn_attacks(uint32_t white_pawns) {
+        uint32_t attacks = 0;
+        // 白兵往左上攻擊 (Index - 6)，位元右移
+        attacks |= (white_pawns >> 6) & (~FILE_E); 
+        // 白兵往右上攻擊 (Index - 4)，位元右移
+        attacks |= (white_pawns >> 4) & (~FILE_A); 
+        return attacks;
+    }
+    ```
 ---
-
-## 4. 滑動子 (Sliding Pieces) 的機動性計算
+4 滑動子 (Sliding Pieces) 的機動性計算
 
 象、車、后被稱為「滑動子」，它們的攻擊射線會被**任何棋子 (包含敵我)** 擋住。
 因此，你不能像馬一樣直接查靜態的 `bb_knight` 表。
 
-**在評估函數中的實作建議：**
-你有兩種方式來取得滑動子當下的 `valid_moves`：
+這份指南提供了在 5x6 棋盤上最穩定、極速的滑動子機動性計算方式 (Raycasting)。利用短迴圈配合 2D 陣列，避免了複雜的位元板碰撞計算。
 
-1.  **迴圈射線法 (較慢但直觀)：** 從棋子所在座標出發，沿著 2D 陣列 (`board[2][6][5]`) 的方向迴圈往外找，碰到任何棋子就停，計算走過的格數。
-2.  **Magic Bitboards / 預算查表法 (極速)：** 這是高階引擎的做法。利用目前盤面上所有棋子的佔用狀態 (`all_pieces_bitboard`) 作為 Hash Key，去查表瞬間得到該滑動子目前的攻擊遮罩。
 
-一旦取得滑動子實際的攻擊遮罩，再套用前面的 `__builtin_popcount` 算出格數並乘上對應的乘數即可。
 
-### 4.4 兵形分析 (Pawn Structure)
+    1. 定義射線方向與乘數
 
-藉由檢查每一欄 (Column) 的兵來給予微調分數：
-* **疊兵 (Doubled Pawns) 懲罰： `-15 分`**
-    * **判定：** 同一欄中有超過 1 個己方的兵。
-* **孤兵 (Isolated Pawn) 懲罰： `-20 分`**
-    * **判定：** 該兵所在的欄，其「左邊一欄」跟「右邊一欄」完全沒有己方的兵。
-* **通路兵 (Passed Pawn) 獎勵： `+30 分`**
-    * **判定：** 該兵的前方 (包含正前方同欄、左前、右前一欄) 已經沒有任何敵方兵可阻擋。
+    * **車 (Rook)：** 上、下、左、右 (4 個方向)。乘數：**`+3 分/格`**
+    * **象 (Bishop)：** 四個斜角 (4 個方向)。乘數：**`+4 分/格`**
+    * **后 (Queen)：** 直線加斜線 (8 個方向)。乘數：**`+1 分/格`** (后極易過度活躍，乘數必須最低)
 
-### 4.5 國王安全 (King Safety)
+    ---
 
-在 5x6 的小空間裡，攻王速度極快，國王前方的屏障極度重要：
-* **兵盾破壞 (Missing Pawn Shield) 懲罰： 每個缺失的兵 `-20 分`**
-    * **判定：** 檢查國王正前方的 3 個格子 (左前、正前、右前)，若無己方兵保護則扣分。
-* **半開放/全開放線 (Open File against King) 懲罰：**
-    * **全開放線 `-30 分`：** 國王所在欄沒有任何兵，敵車可長驅直入。
-    * **半開放線 `-15 分`：** 國王所在欄沒有己方的兵，但有敵方的兵。
+    2. 射線掃描輔助函數 (Raycasting Helper)
+
+    請將這個輔助函數加在你的 `evaluateBoard_Standard` 函數之前。它的邏輯非常簡單：從棋子當前位置出發，沿著特定方向一格一格看，碰到自己人就停，碰到敵人算 1 步然後停，碰到空格算 1 步並繼續前進。
+
+    ```cpp
+    // 預先定義好方向向量
+    const int DIR_ROOK_R[4] = {-1, 1, 0, 0};
+    const int DIR_ROOK_C[4] = {0, 0, -1, 1};
+    const int DIR_BISHOP_R[4] = {-1, -1, 1, 1};
+    const int DIR_BISHOP_C[4] = {-1, 1, -1, 1};
+    const int DIR_QUEEN_R[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
+    const int DIR_QUEEN_C[8] = {0, 0, -1, 1, -1, 1, -1, 1};
+
+    // 計算單一滑動子的機動性格數
+    // player: 0 (白), 1 (黑)
+    int get_slider_mobility(Board& b, int r, int c, int player, const int dir_r[], const int dir_c[], int dir_count) {
+        int mobility = 0;
+        
+        for (int i = 0; i < dir_count; i++) {
+            int nr = r + dir_r[i];
+            int nc = c + dir_c[i];
+            
+            while (nr >= 0 && nr < 6 && nc >= 0 && nc < 5) {
+                // 1. 如果撞到自己的棋子，這條射線就被擋住了，換下個方向
+                if (b.board[player][nr][nc] != '\0') {
+                    break;
+                }
+                
+                // 2. 這格是空格，或是敵人的棋子，機動性 +1
+                mobility++;
+                
+                // 3. 如果撞到敵人的棋子，雖然可以吃，但射線無法穿透，換下個方向
+                if (b.board[1 - player][nr][nc] != '\0') {
+                    break;
+                }
+                
+                // 4. 繼續沿著同方向往下一格看
+                nr += dir_r[i];
+                nc += dir_c[i];
+            }
+        }
+        
+        return mobility;
+    }
+    ```
+
+    ---
+
+    3. 整合進靜態評估函數 (State Value Function)
+
+    現在，你可以直接在原本計算材質與 PST 的雙層迴圈中，呼叫這個輔助函數，並乘上對應的分數。
+
+    ```cpp
+    int evaluateBoard_Standard(Board& b) {
+        int white_score = 0;
+        int black_score = 0;
+        
+        // (省略材質計算與快速短路，參考前一份文件...)
+
+        for (int r = 0; r < 6; r++) {
+            for (int c = 0; c < 5; c++) {
+                // --- 白方掃描 ---
+                char wp = b.board[0][r][c];
+                if (wp != '\0') {
+                    // (省略 PST 查表...)
+                    
+                    // 計算滑動子機動性 (白方 player = 0)
+                    if (wp == 'R') {
+                        int mob = get_slider_mobility(b, r, c, 0, DIR_ROOK_R, DIR_ROOK_C, 4);
+                        white_score += (mob * 3);
+                    }
+                    else if (wp == 'B') {
+                        int mob = get_slider_mobility(b, r, c, 0, DIR_BISHOP_R, DIR_BISHOP_C, 4);
+                        white_score += (mob * 4);
+                    }
+                    else if (wp == 'Q') {
+                        int mob = get_slider_mobility(b, r, c, 0, DIR_QUEEN_R, DIR_QUEEN_C, 8);
+                        white_score += (mob * 1);
+                    }
+                }
+                
+                // --- 黑方掃描 ---
+                char bp = b.board[1][r][c];
+                if (bp != '\0') {
+                    // (省略 PST 查表...)
+                    
+                    // 計算滑動子機動性 (黑方 player = 1)
+                    // 注意：機動性分數對黑方來說是「增加他自己的優勢」，所以對白方視角來說要用扣的
+                    if (bp == 'r') {
+                        int mob = get_slider_mobility(b, r, c, 1, DIR_ROOK_R, DIR_ROOK_C, 4);
+                        black_score += (mob * 3); 
+                    }
+                    else if (bp == 'b') {
+                        int mob = get_slider_mobility(b, r, c, 1, DIR_BISHOP_R, DIR_BISHOP_C, 4);
+                        black_score += (mob * 4);
+                    }
+                    else if (bp == 'q') {
+                        int mob = get_slider_mobility(b, r, c, 1, DIR_QUEEN_R, DIR_QUEEN_C, 8);
+                        black_score += (mob * 1);
+                    }
+                }
+            }
+        }
+
+        return white_score - black_score;
+    }
+    ```
 ---
+
+
 
 ## 5. 開發與實作步驟建議
 
 1.  **基礎建設：** 確認 `board[2][6][5]` 與 `uint32_t bitboard` 的狀態同步與轉換正確無誤。
 2.  **合法步驗證：** 確保 `get_legal_actions_bitboard()` 產生的步數與暴力法產生的結果完全一致 (可寫 Test Case 驗證)。
+
+## 完成狀態
+
+此文件已撰寫並標註為「已完成」。
 3.  **基礎 Minimax：** 實作帶有 Alpha-Beta 剪枝的 Minimax，並只使用「材質計分」進行測試。
 4.  **加入位置觀念：** 引入 PST 表格與機動性評估，觀察 AI 的下棋風格是否變得更有戰略性。
-5.  **壓榨效能 (選配)：** 引入 Iterative Deepening 與 Zobrist Hashing，確保在 10 秒內算到最深極限。
+
+    如何從主程式呼叫 Minimax (Root Call)
+    你的 standard_minimax 回傳的是一個整數（分數），但你在遊戲中真正需要 AI 吐出來的是一個具體的棋步 (Move)。因此，你需要一個外層的 Wrapper 函數來啟動 Minimax，並結合時間限制，這才是真正要交作業的主程式入口：
+
+    ```cpp
+    Move get_best_move_standard(Board& board, bool isWhite, int time_limit_ms = 9500) {
+    long long start_time = get_time_ms(); // 取得當下時間
+    Move best_global_move;
+    
+    // 迭代加深迴圈
+    for (int current_depth = 1; current_depth <= 30; current_depth++) {
+        std::vector<Move> moves = get_legal_actions_bitboard(board);
+        
+        // 將上一層的最佳步移到最前面，極大化剪枝效率
+        if (current_depth > 1) {
+            auto it = std::find(moves.begin(), moves.end(), best_global_move);
+            if (it != moves.end()) std::rotate(moves.begin(), it, it + 1);
+        }
+        
+        int alpha = -999999;
+        int beta = 999999;
+        Move best_move_this_depth;
+        
+        // 針對白方 (Max) 或黑方 (Min) 有不同的初始分數設定
+        int best_score_this_depth = isWhite ? -999999 : 999999;
+
+        // 展開第一層的合法步 (Root Node)
+        for (Move m : moves) {
+            Board nextBoard = makeMove(board, m);
+            // 注意！下一層要換對手，所以傳入 !isWhite
+            int score = standard_minimax(nextBoard, current_depth - 1, alpha, beta, !isWhite);
+            
+            if (isWhite) { // 白方追求最大值
+                if (score > best_score_this_depth) {
+                    best_score_this_depth = score;
+                    best_move_this_depth = m;
+                }
+                alpha = std::max(alpha, score);
+            } else { // 黑方追求最小值
+                if (score < best_score_this_depth) {
+                    best_score_this_depth = score;
+                    best_move_this_depth = m;
+                }
+                beta = std::min(beta, score);
+            }
+            
+            // 檢查是否超時，超時則放棄這層搜尋，直接回傳上一層的結果
+            if (get_time_ms() - start_time > time_limit_ms) {
+                return best_global_move;
+            }
+        }
+        
+        best_global_move = best_move_this_depth; // 更新全局最佳步
+        
+        // 如果找到必勝步 (將死)，可提早結束
+        if (isWhite && best_score_this_depth > 90000) break;
+        if (!isWhite && best_score_this_depth < -90000) break;
+    }
+    
+    return best_global_move;
+    }
+    ```
+---
