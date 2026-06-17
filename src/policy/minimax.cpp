@@ -26,10 +26,15 @@ namespace {
 
     // 🌟 輔助函數：MVV-LVA (獨立變數 current_player，避開 p 衝突)
     int score_action(State* state, const Move& action) {
+        int from_r = action.first.first;
+        int from_c = action.first.second;
+        int to_r   = action.second.first;
+        int to_c   = action.second.second;
+        
         int current_player = state->player;
         int opp = 1 - current_player;
-        int8_t attacker = state->board.board[current_player][action.first.first][action.first.second];
-        int8_t victim = state->board.board[opp][action.second.first][action.second.second];
+        int8_t attacker = state->board.board[current_player][from_r][from_c];
+        int8_t victim   = state->board.board[opp][to_r][to_c];
         
         if (victim != 0) {
             static const int val[7] = {0, 10, 30, 30, 50, 90, 1000};
