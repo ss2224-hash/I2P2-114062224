@@ -50,6 +50,10 @@ public:
         const GameHistory* history = nullptr
     ) override;
     State* next_state(const Move& move) override;
+    
+    // 🌟 新增：極速狀態更新函數 (避免 new/delete 記憶體分配與命名衝突)
+    void apply_move(const Move& move, State& out_state) const;
+
     void get_legal_actions() override;
     void get_legal_actions_naive();
     void get_legal_actions_bitboard();
