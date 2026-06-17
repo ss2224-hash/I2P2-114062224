@@ -11,71 +11,64 @@
  * 🌟 大師級評估系統 (Master-Level Evaluation)
  *============================================================*/
 
-// 1. 子力價值分為：中局 (Midgame) 與殘局 (Endgame)
-// 兵=0, 車=1, 馬=2, 象=3, 后=4, 王=5 (對應原本 1~6 的 piece ID)
 static const int mg_value[7] = {0, 100, 500, 320, 330, 900, 20000};
 static const int eg_value[7] = {0, 120, 500, 330, 340, 900, 20000};
 
-// 棋子帶來的 "時期權重" (用來判斷現在是開局還是殘局)
-// 滿分大約 24 (代表剛開局)，0 代表只剩下兵跟王
 static const int phase_weights[7] = {0, 0, 2, 1, 1, 4, 0};
 
-// 2. 漸進式位置表 (Tapered PSTs) - 從白方視角 (向 row=0 前進)
-// 🌟 中局表 (Midgame PST)：國王要龜縮、小兵別亂衝
 static const int mg_pst[6][BOARD_H][BOARD_W] = {
-    // 兵 (Pawn)
+    // Pawn
     {{  0,   0,   0,   0,   0},  
      { 50,  50,  50,  50,  50},  
      { 10,  10,  20,  10,  10},  
      {  5,   5,  10,   5,   5},  
      {  0,   0,   0,   0,   0},  
      {  0,   0,   0,   0,   0}}, 
-    // 車 (Rook)
+    // Rook
     {{  0,   0,   5,   0,   0}, {  5,  10,  10,  10,   5}, { -5,   0,   0,   0,  -5},
      { -5,   0,   0,   0,  -5}, { -5,   0,   0,   0,  -5}, {  0,   0,   5,   0,   0}},
-    // 馬 (Knight)
+    // Knight
     {{-10,  -5,  -5,  -5, -10}, { -5,   0,   5,   0,  -5}, { -5,   5,  10,   5,  -5},
      { -5,   5,  10,   5,  -5}, { -5,   0,   5,   0,  -5}, {-10,  -5,  -5,  -5, -10}},
-    // 象 (Bishop)
+    // Bishop
     {{ -5,   0,   0,   0,  -5}, {  0,   5,   5,   5,   0}, {  0,   5,  10,   5,   0},
      {  0,   5,  10,   5,   0}, {  0,   5,   5,   5,   0}, { -5,   0,   0,   0,  -5}},
-    // 后 (Queen)
+    // Queen
     {{ -5,  -5,  -5,  -5,  -5}, { -5,   0,   0,   0,  -5}, { -5,   0,   5,   0,  -5},
      { -5,   0,   5,   0,  -5}, { -5,   0,   0,   0,  -5}, { -5,  -5,  -5,  -5,  -5}},
-    // 國王 (King) - 🌟 中局縮在底線角落！
+    // King 
     {{-30, -30, -30, -30, -30}, {-30, -30, -30, -30, -30}, {-30, -30, -30, -30, -30},
      {-20, -20, -20, -20, -20}, { 10,  10,  -5,  10,  10}, { 20,  20,   0,  20,  20}},
 };
 
-// 🌟 殘局表 (Endgame PST)：國王出擊！小兵瘋狂衝刺！
 static const int eg_pst[6][BOARD_H][BOARD_W] = {
-    // 兵 (Pawn) - 越接近升變分數飆越高
+    // Pawn 
     {{  0,   0,   0,   0,   0},  
      { 80,  80,  80,  80,  80},  
      { 40,  40,  50,  40,  40},  
      { 20,  20,  30,  20,  20},  
      { 10,  10,  10,  10,  10},  
      {  0,   0,   0,   0,   0}}, 
-    // 車 (Rook)
+    // Rook
     {{  0,   0,   0,   0,   0}, {  0,   0,   0,   0,   0}, {  0,   0,   0,   0,   0},
      {  0,   0,   0,   0,   0}, {  0,   0,   0,   0,   0}, {  0,   0,   0,   0,   0}},
-    // 馬 (Knight)
+    // Knight
     {{-10,  -5,  -5,  -5, -10}, { -5,   0,   0,   0,  -5}, { -5,   0,   5,   0,  -5},
      { -5,   0,   5,   0,  -5}, { -5,   0,   0,   0,  -5}, {-10,  -5,  -5,  -5, -10}},
-    // 象 (Bishop)
+    // Bishop
     {{ -5,   0,   0,   0,  -5}, {  0,   0,   0,   0,   0}, {  0,   0,   5,   0,   0},
      {  0,   0,   5,   0,   0}, {  0,   0,   0,   0,   0}, { -5,   0,   0,   0,  -5}},
-    // 后 (Queen)
+    // Queen
     {{ -5,  -5,  -5,  -5,  -5}, { -5,   0,   0,   0,  -5}, { -5,   0,   5,   0,  -5},
      { -5,   0,   5,   0,  -5}, { -5,   0,   0,   0,  -5}, { -5,  -5,  -5,  -5,  -5}},
-    // 國王 (King) - 🌟 殘局站到棋盤中央主宰一切！
+    // King 
     {{-20, -10, -10, -10, -20}, {-10,   5,  10,   5, -10}, {-10,  10,  20,  10, -10},
      {-10,  10,  20,  10, -10}, {-10,   5,  10,   5, -10}, {-20, -10, -10, -10, -20}},
 };
 
 
 /*============================================================
- * evaluate() — 結合時期、兵陣與重子控制的現代評估
+ * evaluate()
  *============================================================*/
 
 int State::evaluate(
@@ -84,7 +77,7 @@ int State::evaluate(
     const GameHistory* history
 ){
     (void)history; 
-    (void)use_kp_eval; // 這次的升級將全面套用，不再區分簡單模式
+    (void)use_kp_eval; 
     (void)use_mobility;
 
     if(this->game_state == WIN){
@@ -101,11 +94,14 @@ int State::evaluate(
     int opp_mg = 0, opp_eg = 0;
     int phase = 0;
 
-    // 🌟 特徵收集器：為了極速計算兵陣與開放線
     int my_pawns_on_col[BOARD_W] = {0};
     int opp_pawns_on_col[BOARD_W] = {0};
 
-    // 1. 掃描全局，計算子力、位置與收集兵陣資訊
+    // 🌟 新增：紀錄雙方國王的位置，用於殘局追殺
+    int my_kr = -1, my_kc = -1;
+    int opp_kr = -1, opp_kc = -1;
+
+    // 1. 掃描全局
     for(int r = 0; r < BOARD_H; r++){
         for(int c = 0; c < BOARD_W; c++){
             
@@ -120,7 +116,8 @@ int State::evaluate(
                 my_mg += mg_pst[my_piece - 1][pst_r][c];
                 my_eg += eg_pst[my_piece - 1][pst_r][c];
 
-                if (my_piece == 1) my_pawns_on_col[c]++; // 記錄小兵位置
+                if (my_piece == 1) my_pawns_on_col[c]++; 
+                if (my_piece == 6) { my_kr = r; my_kc = c; } // 找到我方國王
             }
 
             // 敵方計算
@@ -135,29 +132,26 @@ int State::evaluate(
                 opp_eg += eg_pst[opp_piece - 1][opp_pst_r][c];
 
                 if (opp_piece == 1) opp_pawns_on_col[c]++;
+                if (opp_piece == 6) { opp_kr = r; opp_kc = c; } // 找到敵方國王
             }
         }
     }
 
-    // 2. 兵陣結構與重子控制 (Pawn Structure & Open Files)
+    // 2. 兵陣結構與重子控制
     for(int r = 0; r < BOARD_H; r++){
         for(int c = 0; c < BOARD_W; c++){
             
             int my_piece = self_board[r][c];
             if (my_piece == 1) {
-                // 🌟 疊兵 (Doubled Pawns) 懲罰：同一排有大於1隻自己的兵
                 if (my_pawns_on_col[c] > 1) {
                     my_mg -= 15; my_eg -= 20;
                 }
-                // 🌟 孤兵 (Isolated Pawn) 懲罰：左右兩排都沒有自己的兵
                 bool isolated = true;
                 if (c > 0 && my_pawns_on_col[c - 1] > 0) isolated = false;
                 if (c < BOARD_W - 1 && my_pawns_on_col[c + 1] > 0) isolated = false;
                 if (isolated) {
                     my_mg -= 10; my_eg -= 20;
                 }
-                // 🌟 通路兵 (Passed Pawn) 獎勵：前方與斜前方都沒有敵人的兵
-                // (MinitChess 棋盤小，通路兵極度致命！)
                 bool passed = true;
                 int forward_dir = (this->player == 0) ? -1 : 1;
                 for (int check_r = r + forward_dir; check_r >= 0 && check_r < BOARD_H; check_r += forward_dir) {
@@ -166,20 +160,18 @@ int State::evaluate(
                     if (c < BOARD_W - 1 && oppn_board[check_r][c+1] == 1) passed = false;
                 }
                 if (passed) {
-                    my_mg += 30; my_eg += 80; // 殘局通路兵價值連城
+                    my_mg += 30; my_eg += 80; 
                 }
             }
-            // 🌟 開放線上的車與后 (Rooks & Queens on Open Files)
             else if (my_piece == 2 || my_piece == 5) {
-                if (my_pawns_on_col[c] == 0) { // 半開放線 (Semi-open file)
+                if (my_pawns_on_col[c] == 0) { 
                     my_mg += 10; my_eg += 10;
-                    if (opp_pawns_on_col[c] == 0) { // 全開放線 (Open file)
+                    if (opp_pawns_on_col[c] == 0) { 
                         my_mg += 15; my_eg += 15;
                     }
                 }
             }
 
-            // --- 敵方的兵陣計算 (完全對稱的邏輯) ---
             int opp_piece = oppn_board[r][c];
             if (opp_piece == 1) {
                 if (opp_pawns_on_col[c] > 1) {
@@ -213,8 +205,35 @@ int State::evaluate(
         }
     }
 
-    // 3. 混合式過渡 (Tapered Eval Calculation)
-    // 總 Phase 最大約 24，代表開局；Phase = 0 代表純殘局
+    // 🌟 3. 殘局追殺機制 (Mop-up Evaluation)
+    // 只有在殘局 (phase 低) 且雙方國王都在場上時才啟動
+    if (phase < 6 && my_kr != -1 && opp_kr != -1) {
+        
+        // 如果我方處於絕對優勢 (領先超過 300 分，約等於多一個輕子以上)
+        if (my_eg - opp_eg > 300) {
+            // A. 將對手國王逼迫到角落或邊緣 (曼哈頓距離計算)
+            int center_r = BOARD_H / 2;
+            int center_c = BOARD_W / 2;
+            int opp_dist_to_center = std::abs(opp_kr - center_r) + std::abs(opp_kc - center_c);
+            my_eg += opp_dist_to_center * 20; // 越靠近邊緣，加分越多
+
+            // B. 自己的國王主動靠近對手國王
+            int kings_dist = std::abs(my_kr - opp_kr) + std::abs(my_kc - opp_kc);
+            my_eg += (14 - kings_dist) * 10; // 兩王距離越近，加分越多
+        }
+        // 如果是我方落後，反向操作：死命往中間跑，並遠離對手國王
+        else if (opp_eg - my_eg > 300) {
+            int center_r = BOARD_H / 2;
+            int center_c = BOARD_W / 2;
+            int my_dist_to_center = std::abs(my_kr - center_r) + std::abs(my_kc - center_c);
+            opp_eg += my_dist_to_center * 20;
+
+            int kings_dist = std::abs(my_kr - opp_kr) + std::abs(my_kc - opp_kc);
+            opp_eg += (14 - kings_dist) * 10;
+        }
+    }
+
+    // 4. 混合式過渡 (Tapered Eval Calculation)
     if (phase > 24) phase = 24;
     int mg_score = my_mg - opp_mg;
     int eg_score = my_eg - opp_eg;
@@ -534,10 +553,10 @@ void State::get_legal_actions_naive(){
 #define BB_COL(sq)   ((sq) % BOARD_W)
 
 // Precomputed attack tables (initialized once)
-static uint32_t bb_knight[30];       // knight attack mask per square
-static uint32_t bb_king[30];         // king attack mask per square
-static uint32_t bb_pawn_push[2][30]; // pawn push target per player/square
-static uint32_t bb_pawn_cap[2][30];  // pawn capture targets per player/square
+static uint32_t bb_knight[30];       
+static uint32_t bb_king[30];         
+static uint32_t bb_pawn_push[2][30]; 
+static uint32_t bb_pawn_cap[2][30];  
 static bool bb_ready = false;
 
 // Sliding piece direction vectors (0-3: rook, 4-7: bishop, 0-7: queen)
