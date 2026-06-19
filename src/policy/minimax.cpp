@@ -22,16 +22,13 @@ namespace {
     const uint64_t TT_MASK = TT_SIZE - 1;
     std::vector<TTEntry> transposition_table(TT_SIZE);
 
-    thread_local std::vector<State> state_stack(128);
+    std::vector<State> state_stack(128);
 
-    // 🌟 新增：殺手步記憶體 (記錄每一層最近兩步引發剪枝的非吃子步)
-    thread_local Move killer_moves[128][2];
+    // 安全有效的排序外掛：殺手步與歷史步記憶體
+    Move killer_moves[128][2];
+    int history_table[2][6][5][6][5];
 
-    // 🌟 新增：歷史步記憶體 (記錄整棵搜尋樹中，每種移動成功剪枝的次數)
-    // 陣列維度：[玩家 0/1][起點 Row][起點 Col][終點 Row][終點 Col]
-    thread_local int history_table[2][6][5][6][5];
-
-    // 🌟 終極步法排序函數 (加入 Ply 參數以讀取殺手步)
+    // 🌟 終極步法排序函數 (安全版)
     int score_action(State* state, const Move& action, int ply) {
         int current_player = state->player;
         int opp = 1 - current_player;
@@ -48,18 +45,17 @@ namespace {
             return 10000 + val[victim] * 10 - val[attacker]; 
         }
 
-        // 2. 次高優先：安靜步中的「殺手步 (Killer Moves)」
+        // 2. 次高優先：殺手步 (Killer Moves)
         if (ply < 128) {
             if (action == killer_moves[ply][0]) return 9000;
             if (action == killer_moves[ply][1]) return 8000;
         }
 
-        // 3. 一般優先：安靜步的「歷史宏觀價值 (History Heuristic)」
-        // 歷史分數通常會隨著搜尋累積，加上這層排序能讓 AI 自動學會佈局
+        // 3. 一般優先：歷史啟發 (History Heuristic)
         return history_table[current_player][from_r][from_c][to_r][to_c]; 
     }
 
-    // 靜止搜尋 (不變)
+    // 🌟 靜止搜尋 (Quiescence Search)
     int quiescence_search(State *state, GameHistory& history, SearchContext& ctx, const MMParams& p, int alpha, int beta, int ply) {
         ctx.nodes++;
         if (ctx.stop) return 0;
@@ -72,6 +68,7 @@ namespace {
             state->get_legal_actions();
         }
 
+        // 回歸安全穩定的 std::sort
         std::sort(state->legal_actions.begin(), state->legal_actions.end(), [&](const auto& a, const auto& b) {
             return score_action(state, a, ply) > score_action(state, b, ply);
         });
@@ -79,9 +76,8 @@ namespace {
         if ((size_t)ply >= state_stack.size()) state_stack.resize(ply + 2);
 
         for (auto& action : state->legal_actions) {
-            // 🌟 嚴格防禦：QS 僅搜尋吃子步，且 QS 不需要殺手步
-            int current_player = state->player;
-            int opp = 1 - current_player;
+            // QS 僅搜尋吃子步
+            int opp = 1 - state->player;
             if (state->board.board[opp][action.second.first][action.second.second] == 0) continue; 
 
             State* next = &state_stack[ply];
@@ -98,7 +94,7 @@ namespace {
 
 
 /*============================================================
- * MiniMax — eval_ctx
+ * MiniMax — eval_ctx (移除 NMP 與 LMR，回歸純粹 PVS)
  *============================================================*/
 int MiniMax::eval_ctx(
     State *state,
@@ -140,7 +136,7 @@ int MiniMax::eval_ctx(
         return qs_score;
     }
 
-    // 🌟 排序時傳入 ply，讀取殺手與歷史分數
+    // 回歸安全穩定的 std::sort
     std::sort(state->legal_actions.begin(), state->legal_actions.end(), [&](const auto& a, const auto& b) {
         return score_action(state, a, ply) > score_action(state, b, ply);
     });
@@ -158,13 +154,16 @@ int MiniMax::eval_ctx(
         int score;
 
         if (first_move) {
+            // 第 1 步：全視窗正常搜尋 (PVS 主變例)
             int raw = eval_ctx(next, depth - 1, history, ply + 1, ctx, p, -beta, -alpha);
             score = -raw;
             first_move = false;
         } else {
+            // 後續步：零視窗試探 (沒有 LMR，確保每一步都嚴謹驗證)
             int raw = eval_ctx(next, depth - 1, history, ply + 1, ctx, p, -alpha - 1, -alpha);
             score = -raw;
 
+            // PVS 驗證失敗：重新用全視窗搜尋
             if (score > alpha && score < beta) {
                 raw = eval_ctx(next, depth - 1, history, ply + 1, ctx, p, -beta, -score);
                 score = -raw;
@@ -174,21 +173,17 @@ int MiniMax::eval_ctx(
         if(score > best_score) best_score = score;
         if(best_score > alpha) alpha = best_score;
         
-        // 🌟 剪枝觸發！學習時間：更新殺手與歷史記憶體
+        // Beta 剪枝與歷史/殺手學習
         if(alpha >= beta) { 
             int opp = 1 - state->player;
-            int to_r = action.second.first;
-            int to_c = action.second.second;
+            bool is_capture = (state->board.board[opp][action.second.first][action.second.second] != 0);
             
-            // 只有「非吃子步」才有資格成為殺手與歷史（吃子步已經有 MVV-LVA 照顧了）
-            if (state->board.board[opp][to_r][to_c] == 0) {
-                // 1. 儲存殺手步
+            if (!is_capture) {
                 if (ply < 128 && killer_moves[ply][0] != action) {
                     killer_moves[ply][1] = killer_moves[ply][0];
                     killer_moves[ply][0] = action;
                 }
-                // 2. 增加歷史步的分數 (深度越深，代表這招越強，加分平方級提升)
-                history_table[state->player][action.first.first][action.first.second][to_r][to_c] += depth * depth;
+                history_table[state->player][action.first.first][action.first.second][action.second.first][action.second.second] += depth * depth;
             }
             break; 
         }
@@ -208,7 +203,7 @@ int MiniMax::eval_ctx(
 }
 
 /*============================================================
- * MiniMax — search (迭代加深)
+ * MiniMax — search (終極時間管理：保底與救援機制)
  *============================================================*/
 SearchResult MiniMax::search(
     State *state,
@@ -220,13 +215,23 @@ SearchResult MiniMax::search(
     MMParams p = MMParams::from_map(ctx.params);
     SearchResult best_result_overall;
     best_result_overall.depth = 0;
+    best_result_overall.score = -M_MAX; // 預設為極低分
 
-    // 🌟 每回合重新思考前，將舊的歷史與殺手記憶體衰減或清空，避免無限膨脹
+    // 清空歷史記憶體
     memset(killer_moves, 0, sizeof(killer_moves));
     memset(history_table, 0, sizeof(history_table));
 
-    if(!state->legal_actions.size()){
+    if(state->legal_actions.empty()){
         state->get_legal_actions();
+    }
+
+    // =========================================================
+    // 🛡️ 防線一：絕對保底機制 (Absolute Fallback)
+    // 萬一系統連 0.001 秒都不給，剛進迴圈就超時，
+    // 我們無條件把「第一步合法步」當作備案，絕對不交白卷！
+    // =========================================================
+    if (!state->legal_actions.empty()) {
+        best_result_overall.best_move = state->legal_actions[0];
     }
 
     if(state->game_state == WIN){
@@ -248,38 +253,45 @@ SearchResult MiniMax::search(
     Move prev_best_move; 
     bool has_prev_best_move = false;
 
+    // 🌟 迭代加深 (Iterative Deepening)
     for (int current_depth = 1; current_depth <= depth; current_depth++) {
         
         SearchResult current_result;
         current_result.depth = current_depth;
+        current_result.best_move = best_result_overall.best_move; // 繼承上一層的保底
+        
         int best_score = M_MAX; 
         int alpha = M_MAX;
         int beta = P_MAX;
         int move_index = 0;
 
-        std::sort(state->legal_actions.begin(), state->legal_actions.end(), [&](const auto& a, const auto& b) {
-            int score_a = score_action(state, a, 0); // Root 是 0 層
-            int score_b = score_action(state, b, 0);
-            
-            if (has_prev_best_move) {
-                if (a == prev_best_move) score_a += 1000000;
-                if (b == prev_best_move) score_b += 1000000;
+        // 根節點排序：PV (上一層最佳解) 絕對優先
+        int num_moves = state->legal_actions.size();
+        int move_scores[256];
+        for (int i = 0; i < num_moves; ++i) {
+            move_scores[i] = score_action(state, state->legal_actions[i], 0);
+            if (has_prev_best_move && state->legal_actions[i] == prev_best_move) {
+                move_scores[i] += 1000000; 
             }
-            return score_a > score_b;
-        });
+        }
 
-        bool first_move = true;
+        // 🌟 即時挑選 (Selection Sort)
+        for(int i = 0; i < num_moves; ++i) {
+            int best_idx = i;
+            for (int j = i + 1; j < num_moves; ++j) {
+                if (move_scores[j] > move_scores[best_idx]) best_idx = j;
+            }
+            std::swap(state->legal_actions[i], state->legal_actions[best_idx]);
+            std::swap(move_scores[i], move_scores[best_idx]);
 
-        for(auto& action : state->legal_actions){
+            auto& action = state->legal_actions[i];
             State* next = &state_stack[0];
             state->apply_move(action, *next); 
 
             int score;
-
-            if (first_move) {
+            if (i == 0) {
                 int raw = eval_ctx(next, current_depth - 1, history, 1, ctx, p, -beta, -alpha);
                 score = -raw;
-                first_move = false;
             } else {
                 int raw = eval_ctx(next, current_depth - 1, history, 1, ctx, p, -alpha - 1, -alpha);
                 score = -raw;
@@ -290,6 +302,7 @@ SearchResult MiniMax::search(
                 }
             }
             
+            // 🚨 時間到了，立刻中斷此步的後續計算
             if (ctx.stop) break; 
 
             if(move_index == 0 || score > best_score){
@@ -307,8 +320,22 @@ SearchResult MiniMax::search(
             move_index++;
         }
 
-        if (ctx.stop) break; 
+        // =========================================================
+        // 🛡️ 防線二：部分結果救援 (Partial Rescue)
+        // =========================================================
+        if (ctx.stop) {
+            // 如果這層被強制中斷，但我們已經算完了第一步 (move_index > 0)，
+            // 且這步的分數甚至比上一層的最佳分數還要高，我們就大膽採用這個熱騰騰的半成品！
+            // 否則，我們就直接 break，保留上一層完整算完的 best_result_overall。
+            if (move_index > 0 && current_result.score > best_result_overall.score) {
+                best_result_overall = current_result;
+                best_result_overall.nodes = ctx.nodes;
+                best_result_overall.seldepth = ctx.seldepth;
+            }
+            break; 
+        }
 
+        // 這層完整算完了，更新全域最佳解
         best_result_overall = current_result;
         best_result_overall.nodes = ctx.nodes;
         best_result_overall.seldepth = ctx.seldepth;
@@ -316,24 +343,12 @@ SearchResult MiniMax::search(
         prev_best_move = current_result.best_move;
         has_prev_best_move = true;
 
+        // 提早結束機制：發現將死直接下棋
         if (best_score > 900000) break; 
     }
 
     return best_result_overall;
 }
 
-ParamMap MiniMax::default_params(){
-    return {
-        {"UseKPEval", "true"},
-        {"UseEvalMobility", "true"},
-        {"ReportPartial", "true"},
-    };
-}
-
-std::vector<ParamDef> MiniMax::param_defs(){
-    return {
-        {"UseKPEval", ParamDef::CHECK, "true"},
-        {"UseEvalMobility", ParamDef::CHECK, "true"},
-        {"ReportPartial", ParamDef::CHECK, "true"},
-    };
-}
+ParamMap MiniMax::default_params(){ return {{"UseKPEval", "true"}, {"UseEvalMobility", "true"}, {"ReportPartial", "true"}}; }
+std::vector<ParamDef> MiniMax::param_defs(){ return {{"UseKPEval", ParamDef::CHECK, "true"}, {"UseEvalMobility", ParamDef::CHECK, "true"}, {"ReportPartial", ParamDef::CHECK, "true"}}; }
