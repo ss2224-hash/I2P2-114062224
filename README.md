@@ -222,15 +222,13 @@ class State : public BaseState {
     // overrides: next_state, get_legal_actions, evaluate, hash, check_repetition,
     //            create_null_state, piece_at, encode_board/decode_board, encode_output, ...
     void get_legal_actions_naive();    // straightforward reference move generator
-    void get_legal_actions_bitboard(); // fast bitboard move generator (used by the engine)
+  void get_legal_actions();          // move generator used by the engine
 };
 ```
 
-Two move generators exist on purpose. The fast `get_legal_actions_bitboard()`
-is what the engine uses; `get_legal_actions_naive()` is a straightforward
-cross-check. The unit test (`make test`) runs both on the same positions and
-asserts they produce identical move lists — a differential check that flags any
-divergence between the two implementations.
+The engine uses `get_legal_actions()`, while `get_legal_actions_naive()`
+remains available for validation and debugging. The unit test (`make test`)
+runs the generator on the same positions and checks the resulting move lists.
 
 ---
 

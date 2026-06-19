@@ -59,6 +59,25 @@ namespace {
     int quiescence_search(State *state, GameHistory& history, SearchContext& ctx, const MMParams& p, int alpha, int beta, int ply) {
         ctx.nodes++;
         if (ctx.stop) return 0;
+        
+        // =========================================================
+        // 🌟 新增防線：百步末日極限判斷 (Horizon Fix)
+        // 如果到了第 100 步，遊戲強制結束，直接結算子力！
+        // =========================================================
+        if (state->step >= 100) {
+            int my_mat = 0, opp_mat = 0;
+            static const int mat_val[7] = {0, 100, 500, 320, 330, 900, 20000};
+            for(int r = 0; r < BOARD_H; r++){
+                for(int c = 0; c < BOARD_W; c++){
+                    my_mat += mat_val[state->board.board[state->player][r][c]];
+                    opp_mat += mat_val[state->board.board[1 - state->player][r][c]];
+                }
+            }
+            if (my_mat > opp_mat) return (P_MAX - 200) - state->step; // 判定為獲勝
+            if (my_mat < opp_mat) return -(P_MAX - 200) + state->step; // 判定為戰敗
+            return 0; // 平局
+        }
+        // =========================================================
 
         int stand_pat = state->evaluate(p.use_kp_eval, p.use_eval_mobility, &history);
         if (stand_pat >= beta) return beta;
@@ -125,6 +144,25 @@ int MiniMax::eval_ctx(
 
     if(state->game_state == DRAW) return 0;
     if(state->game_state == WIN) return P_MAX - state->step; 
+
+    // =========================================================
+    // 🌟 新增防線：百步末日極限判斷 (Horizon Fix)
+    // =========================================================
+    if (state->step >= 100) {
+        int my_mat = 0, opp_mat = 0;
+        static const int mat_val[7] = {0, 100, 500, 320, 330, 900, 20000};
+        for(int r = 0; r < BOARD_H; r++){
+            for(int c = 0; c < BOARD_W; c++){
+                my_mat += mat_val[state->board.board[state->player][r][c]];
+                opp_mat += mat_val[state->board.board[1 - state->player][r][c]];
+            }
+        }
+        // 賦予極端分數：AI 會為了這個「技術性勝利」不擇手段
+        if (my_mat > opp_mat) return (P_MAX - 200) - state->step; 
+        if (my_mat < opp_mat) return -(P_MAX - 200) + state->step; 
+        return 0; 
+    }
+    // =========================================================
 
     int rep_score;
     if(state->check_repetition(history, rep_score)) return rep_score;

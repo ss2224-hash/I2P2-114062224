@@ -23,7 +23,7 @@ void test_position(Board board, int player, const char* name){
   s1.get_legal_actions_naive();
 
   State s2(board, player);
-  s2.get_legal_actions_bitboard();
+  s2.get_legal_actions();
 
   bool ok = true;
 
@@ -88,7 +88,7 @@ void test_game_playthrough(int max_steps){
     s1.get_legal_actions_naive();
 
     State s2(game.board, game.player);
-    s2.get_legal_actions_bitboard();
+    s2.get_legal_actions();
 
     if(s1.game_state != s2.game_state){
       std::cerr << "FAIL step " << step << ": game_state mismatch\n";
@@ -132,7 +132,7 @@ void benchmark(int iterations){
   auto t2 = std::chrono::high_resolution_clock::now();
   for(int i = 0; i < iterations; i++){
     State s(board, i % 2);
-    s.get_legal_actions_bitboard();
+    s.get_legal_actions();
   }
   auto t3 = std::chrono::high_resolution_clock::now();
 
