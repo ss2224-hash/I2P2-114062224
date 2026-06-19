@@ -349,6 +349,33 @@ static void do_search(
 
     int multi_pv = g_multi_pv;
 
+    // =========================================================
+    // 時間控制：只在接近時限時主動停下，避免提早砍半搜尋時間
+    // =========================================================
+    std::atomic<bool> search_done{false};
+    std::thread watchdog;
+    if (movetime_ms > 0) {
+        // 保留少量安全緩衝，讓引擎能接近完整用滿 movetime。
+        int64_t safe_timeout = (movetime_ms > 20) ? (movetime_ms - 20) : movetime_ms;
+        watchdog = std::thread([&, safe_timeout]() {
+            auto start_t = std::chrono::high_resolution_clock::now();
+            while (!search_done.load() && !g_ctx.stop) {
+                auto now_t = std::chrono::high_resolution_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now_t - start_t).count();
+                
+                // 時間一到，瞬間拉下煞車！
+                if (elapsed >= safe_timeout) {
+                    ctx.stop = true;   // 瞬間切斷 minimax 的區域計算
+                    g_ctx.stop = true; // 切斷全域計算
+                    break;
+                }
+                // 每 2 毫秒檢查一次碼表，極度靈敏
+                std::this_thread::sleep_for(std::chrono::milliseconds(2)); 
+            }
+        });
+    }
+    // =========================================================
+
     for(int depth = 1; depth <= depth_limit; depth++){
         if(!alive()){
             break;
@@ -461,13 +488,20 @@ static void do_search(
         if(!alive()){
             break;
         }
-        if(movetime_ms > 0 && total_ms * 2 >= movetime_ms){
-            break;
-        }
+        
         if(result.score >= P_MAX - 100 || result.score <= M_MAX + 100){
             break;
         }
     }
+
+    // =========================================================
+    // 🌟 結束時記得安全回收計時犬
+    // =========================================================
+    search_done = true;
+    if (watchdog.joinable()) {
+        watchdog.join();
+    }
+    // =========================================================
 
     if(alive()){
         log_debug("UBGI: do_search: final best_move=%s legal=%d\n",
